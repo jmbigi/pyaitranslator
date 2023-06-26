@@ -28,12 +28,14 @@ from src.TranslatorMod import (
     sample,
     translate_unrolled,
     translate_symbolic,
+    tf_translate
 )
 from src.plot_attention_mod import plot_attention
 
 use_builtins = True
 
-# Descarga de datos
+# Descarga y prepara el conjunto de datos
+print('*** Descarga y prepara el conjunto de datos')
 
 # Download the file
 path_to_zip = tf.keras.utils.get_file(
@@ -50,6 +52,7 @@ print(inp[-1])
 print(targ[-1])
 
 # Crea un conjunto de datos tf.data
+print('*** Crea un conjunto de datos tf.data')
 
 BUFFER_SIZE = len(inp)
 BATCH_SIZE = 64
@@ -64,6 +67,7 @@ for example_input_batch, example_target_batch in dataset.take(1):
     break
 
 # Preprocesamiento de texto
+print('*** Preprocesamiento de texto')
 
 example_text = tf.constant("¿Todavía está en casa?")
 
@@ -108,11 +112,13 @@ plt.pcolormesh(example_tokens != 0)
 plt.title("Mask")
 
 # El modelo de codificador / decodificar
+print('*** El modelo de codificador / decodificador')
 
 embedding_dim = 256
 units = 1024
 
-# El decodificador
+# El codificador
+print('*** El codificador')
 
 # Convert the input text to tokens.
 example_tokens = input_text_processor(example_input_batch)
@@ -129,6 +135,7 @@ print(f"Encoder state, shape (batch, units): {example_enc_state.shape}")
 # La cabeza de atencion
 
 # Prueba la capa de atencion
+print('*** La cabeza de atención')
 
 attention_layer = BahdanauAttention(units)
 
@@ -182,6 +189,7 @@ zoom = 0.85 * top
 a2.set_ylim([0.90 * top, top])
 a1.plot(a1.get_xlim(), [zoom, zoom], color="k")
 
+print('*** El decodificador')
 # El decodificador
 
 Decoder.call = call
@@ -219,8 +227,10 @@ dec_result, dec_state = decoder(
 )
 
 # Capacitacion
+print('*** Capacitación')
 
 # Implementar el paso de formacion
+print('*** Implementar el paso de formación')
 
 TrainTranslator._preprocess = _preprocess
 
@@ -229,6 +239,7 @@ TrainTranslator._train_step = _train_step
 TrainTranslator._loop_step = _loop_step
 
 # Prueba el paso de entrenamiento
+print('Prueba el paso de entrenamiento')
 
 translator = TrainTranslator(
     embedding_dim,
@@ -283,6 +294,7 @@ train_translator.compile(
 )
 
 # Entrena el modelo
+print('Entrena el modelo')
 
 batch_loss = BatchLogs("batch_loss")
 
@@ -294,6 +306,7 @@ plt.xlabel("Batch #")
 plt.ylabel("CE/token")
 
 # Traducir
+print('Traducir')
 
 translator = Translator(
     encoder=train_translator.encoder,
@@ -303,6 +316,7 @@ translator = Translator(
 )
 
 # Convertir ID de token en texto
+print('Convertir ID de token en texto')
 
 Translator.tokens_to_text = tokens_to_text
 
@@ -314,6 +328,8 @@ example_output_tokens = tf.random.uniform(
 )
 translator.tokens_to_text(example_output_tokens).numpy()
 
+# Muestra de las predicciones del decodificador
+print('Muestra de las predicciones del decodificador')
 
 Translator.sample = sample
 
@@ -321,6 +337,8 @@ example_logits = tf.random.normal([5, 1, output_text_processor.vocabulary_size()
 example_output_tokens = translator.sample(example_logits, temperature=1.0)
 example_output_tokens
 
+# Implementar el ciclo de traduccion
+print('Implementar el ciclo de traducción')
 
 Translator.translate = translate_unrolled
 
@@ -336,12 +354,6 @@ result = translator.translate(input_text=input_text)
 print(result["text"][0].numpy().decode())
 print(result["text"][1].numpy().decode())
 print()
-
-
-@tf.function(input_signature=[tf.TensorSpec(dtype=tf.string, shape=[None])])
-def tf_translate(self, input_text):
-    return self.translate(input_text)
-
 
 Translator.tf_translate = tf_translate
 

@@ -190,3 +190,8 @@ def translate_symbolic(
         return {"text": result_text, "attention": attention_stack}
     else:
         return {"text": result_text}
+
+
+@tf.function(input_signature=[tf.TensorSpec(dtype=tf.string, shape=[None])])
+def tf_translate(self, input_text):
+    return self.translate(input_text)
