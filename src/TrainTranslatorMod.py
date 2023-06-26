@@ -106,14 +106,11 @@ def _loop_step(self, new_tokens, input_mask, enc_output, dec_state):
         new_tokens=input_token, enc_output=enc_output, mask=input_mask
     )
 
-    dec_result, dec_state = self.decoder(decoder_input, state=dec_state)
-    self.shape_checker(dec_result.logits, ("batch", "t1", "logits"))
-    self.shape_checker(dec_result.attention_weights, ("batch", "t1", "s"))
-    self.shape_checker(dec_state, ("batch", "dec_units"))
+    dec_result, dec_state, _ = self.decoder(decoder_input, state=dec_state)
 
     # `self.loss` returns the total for non-padded tokens
     y = target_token
-    y_pred = dec_result.logits
+    y_pred = dec_result
     step_loss = self.loss(y, y_pred)
 
     return step_loss, dec_state
