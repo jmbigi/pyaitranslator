@@ -106,7 +106,13 @@ def _loop_step(self, new_tokens, input_mask, enc_output, dec_state):
         new_tokens=input_token, enc_output=enc_output, mask=input_mask
     )
 
-    dec_result, dec_state = self.decoder(decoder_input, state=dec_state)
+    output_1, dec_result, dec_state = self.decoder(decoder_input, state=dec_state)
+
+   # Print the outputs
+    print(f'output_1: {output_1.shape}, dtype: {output_1.dtype}')
+    print(f'dec_result: {dec_result.shape}, dtype: {dec_result.dtype}')
+    print(f'dec_state: {dec_state.shape}, dtype: {dec_state.dtype}')
+
     self.shape_checker(dec_result.logits, ("batch", "t1", "logits"))
     self.shape_checker(dec_result.attention_weights, ("batch", "t1", "s"))
     self.shape_checker(dec_state, ("batch", "dec_units"))
