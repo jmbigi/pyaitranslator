@@ -1,8 +1,9 @@
-#src.TrainTranslatorMod.py
+# src.TrainTranslatorMod.py
 
 import tensorflow as tf
 from EncoderMod import Encoder
 from DecoderMod import Decoder, DecoderInput
+from ShapeCheckerMod import ShapeChecker
 
 
 class TrainTranslator(tf.keras.Model):
@@ -118,6 +119,14 @@ def _loop_step(self, new_tokens, input_mask, enc_output, dec_state):
     return step_loss, dec_state
 
 
+@tf.function(
+    input_signature=[
+        [
+            tf.TensorSpec(dtype=tf.string, shape=[None]),
+            tf.TensorSpec(dtype=tf.string, shape=[None]),
+        ]
+    ]
+)
 def _tf_train_step(self, inputs):
     return self._train_step(inputs)
 

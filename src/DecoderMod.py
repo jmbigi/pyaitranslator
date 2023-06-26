@@ -2,6 +2,8 @@ import tensorflow as tf
 from typing import Any, Tuple
 import typing
 from BahdanauAttentionMod import BahdanauAttention
+from ShapeCheckerMod import ShapeChecker
+
 
 class Decoder(tf.keras.layers.Layer):
     def __init__(self, output_vocab_size, embedding_dim, dec_units):

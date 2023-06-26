@@ -1,3 +1,6 @@
+import sys
+
+sys.path.insert(0, "./src")
 
 # Configuracion
 
@@ -5,16 +8,28 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_text as tf_text
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 import pathlib
 from src.load_data_mod import load_data, tf_lower_and_split_punct
 from src.EncoderMod import Encoder
 from src.BahdanauAttentionMod import BahdanauAttention
-from src.DecoderMod import Decoder, DecoderInput, DecoderOutput, call
-from src.TrainTranslatorMod import TrainTranslator, _loop_step, _preprocess, _tf_train_step, _train_step
+from src.DecoderMod import Decoder, DecoderInput, call
+from src.TrainTranslatorMod import (
+    TrainTranslator,
+    _loop_step,
+    _preprocess,
+    _tf_train_step,
+    _train_step,
+)
 from src.MakeLossMod import MaskedLoss
 from src.BatchLogsMod import BatchLogs
-from src.TranslatorMod import Translator
+from src.TranslatorMod import (
+    Translator,
+    tokens_to_text,
+    sample,
+    translate_unrolled,
+    translate_symbolic,
+)
+from src.plot_attention_mod import plot_attention
 
 use_builtins = True
 
@@ -103,15 +118,17 @@ units = 1024
 example_tokens = input_text_processor(example_input_batch)
 
 # Encode the input sequence.
-encoder = Encoder(input_text_processor.vocabulary_size(),
-                  embedding_dim, units)
+encoder = Encoder(input_text_processor.vocabulary_size(), embedding_dim, units)
 example_enc_output, example_enc_state = encoder(example_tokens)
 
-print(f'Input batch, shape (batch): {example_input_batch.shape}')
-print(f'Input batch tokens, shape (batch, s): {example_tokens.shape}')
-print(f'Encoder output, shape (batch, s, units): {example_enc_output.shape}')
-print(f'Encoder state, shape (batch, units): {example_enc_state.shape}')
+print(f"Input batch, shape (batch): {example_input_batch.shape}")
+print(f"Input batch tokens, shape (batch, s): {example_tokens.shape}")
+print(f"Encoder output, shape (batch, s, units): {example_enc_output.shape}")
+print(f"Encoder state, shape (batch, units): {example_enc_state.shape}")
 
+# La cabeza de atencion
+
+# Prueba la capa de atencion
 
 attention_layer = BahdanauAttention(units)
 
@@ -123,48 +140,72 @@ example_attention_query = tf.random.normal(shape=[len(example_tokens), 2, 10])
 # Attend to the encoded tokens
 
 context_vector, attention_weights = attention_layer(
-    query=example_attention_query,
-    value=example_enc_output,
-    mask=(example_tokens != 0))
+    query=example_attention_query, value=example_enc_output, mask=(example_tokens != 0)
+)
 
-print(f'Attention result shape: (batch_size, query_seq_length, units):           {context_vector.shape}')
-print(f'Attention weights shape: (batch_size, query_seq_length, value_seq_length): {attention_weights.shape}')
+print(
+    f"Attention result shape: (batch_size, query_seq_length, units):           {context_vector.shape}"
+)
+print(
+    f"Attention weights shape: (batch_size, query_seq_length, value_seq_length): {attention_weights.shape}"
+)
 
 plt.subplot(1, 2, 1)
 plt.pcolormesh(attention_weights[:, 0, :])
-plt.title('Attention weights')
+plt.title("Attention weights")
 
 plt.subplot(1, 2, 2)
 plt.pcolormesh(example_tokens != 0)
-plt.title('Mask')
+plt.title("Mask")
 
 attention_weights.shape
 
 attention_slice = attention_weights[0, 0].numpy()
 attention_slice = attention_slice[attention_slice != 0]
 
+plt.suptitle("Attention weights for one sequence")
+
+plt.figure(figsize=(12, 6))
+a1 = plt.subplot(1, 2, 1)
+plt.bar(range(len(attention_slice)), attention_slice)
+# freeze the xlim
+plt.xlim(plt.xlim())
+plt.xlabel("Attention weights")
+
+a2 = plt.subplot(1, 2, 2)
+plt.bar(range(len(attention_slice)), attention_slice)
+plt.xlabel("Attention weights, zoomed")
+
+# zoom in
+top = max(a1.get_ylim())
+zoom = 0.85 * top
+a2.set_ylim([0.90 * top, top])
+a1.plot(a1.get_xlim(), [zoom, zoom], color="k")
+
+# El decodificador
 
 Decoder.call = call
 
-decoder = Decoder(output_text_processor.vocabulary_size(),
-                  embedding_dim, units)
+decoder = Decoder(output_text_processor.vocabulary_size(), embedding_dim, units)
 
 # Convert the target sequence, and collect the "[START]" tokens
 example_output_tokens = output_text_processor(example_target_batch)
 
-start_index = output_text_processor.get_vocabulary().index('[START]')
+start_index = output_text_processor.get_vocabulary().index("[START]")
 first_token = tf.constant([[start_index]] * example_output_tokens.shape[0])
 
 # Run the decoder
 dec_result, dec_state = decoder(
-    inputs = DecoderInput(new_tokens=first_token,
-                          enc_output=example_enc_output,
-                          mask=(example_tokens != 0)),
-    state = example_enc_state
+    inputs=DecoderInput(
+        new_tokens=first_token,
+        enc_output=example_enc_output,
+        mask=(example_tokens != 0),
+    ),
+    state=example_enc_state,
 )
 
-print(f'logits shape: (batch_size, t, output_vocab_size) {dec_result.logits.shape}')
-print(f'state shape: (batch_size, dec_units) {dec_state.shape}')
+print(f"logits shape: (batch_size, t, output_vocab_size) {dec_result.logits.shape}")
+print(f"state shape: (batch_size, dec_units) {dec_state.shape}")
 
 sampled_token = tf.random.categorical(dec_result.logits[:, 0, :], num_samples=1)
 
@@ -173,11 +214,13 @@ first_word = vocab[sampled_token.numpy()]
 first_word[:5]
 
 dec_result, dec_state = decoder(
-    DecoderInput(sampled_token,
-                 example_enc_output,
-                 mask=(example_tokens != 0)),
-    state=dec_state)
+    DecoderInput(sampled_token, example_enc_output, mask=(example_tokens != 0)),
+    state=dec_state,
+)
 
+# Capacitacion
+
+# Implementar el paso de formacion
 
 TrainTranslator._preprocess = _preprocess
 
@@ -185,13 +228,15 @@ TrainTranslator._train_step = _train_step
 
 TrainTranslator._loop_step = _loop_step
 
-TrainTranslator._tf_train_step = _tf_train_step
+# Prueba el paso de entrenamiento
 
 translator = TrainTranslator(
-    embedding_dim, units,
+    embedding_dim,
+    units,
     input_text_processor=input_text_processor,
     output_text_processor=output_text_processor,
-    use_tf_function=False)
+    use_tf_function=False,
+)
 
 # Configure the loss and optimizer
 translator.compile(
@@ -202,39 +247,34 @@ translator.compile(
 np.log(output_text_processor.vocabulary_size())
 
 for n in range(10):
-  print(translator.train_step([example_input_batch, example_target_batch]))
+    print(translator.train_step([example_input_batch, example_target_batch]))
 print()
 
-#This works ok
+TrainTranslator._tf_train_step = _tf_train_step
+
 translator.use_tf_function = True
-
-@tf.function(input_signature=[[tf.TensorSpec(dtype=tf.string, shape=[None]),
-                               tf.TensorSpec(dtype=tf.string, shape=[None])]])
-
-
-#This does not work because of @tf.function?
-translator.use_tf_function = True
-
 
 translator.train_step([example_input_batch, example_target_batch])
 
 for n in range(10):
-  print(translator.train_step([example_input_batch, example_target_batch]))
+    print(translator.train_step([example_input_batch, example_target_batch]))
 print()
 
 losses = []
 for n in range(100):
-  print('.', end='')
-  logs = translator.train_step([example_input_batch, example_target_batch])
-  losses.append(logs['batch_loss'].numpy())
+    print(".", end="")
+    logs = translator.train_step([example_input_batch, example_target_batch])
+    losses.append(logs["batch_loss"].numpy())
 
 print()
 plt.plot(losses)
 
 train_translator = TrainTranslator(
-    embedding_dim, units,
+    embedding_dim,
+    units,
     input_text_processor=input_text_processor,
-    output_text_processor=output_text_processor)
+    output_text_processor=output_text_processor,
+)
 
 # Configure the loss and optimizer
 train_translator.compile(
@@ -242,19 +282,18 @@ train_translator.compile(
     loss=MaskedLoss(),
 )
 
+# Entrena el modelo
 
+batch_loss = BatchLogs("batch_loss")
 
-batch_loss = BatchLogs('batch_loss')
-
-train_translator.fit(dataset, epochs=3,
-                     callbacks=[batch_loss])
+train_translator.fit(dataset, epochs=3, callbacks=[batch_loss])
 
 plt.plot(batch_loss.logs)
 plt.ylim([0, 3])
-plt.xlabel('Batch #')
-plt.ylabel('CE/token')
+plt.xlabel("Batch #")
+plt.ylabel("CE/token")
 
-
+# Traducir
 
 translator = Translator(
     encoder=train_translator.encoder,
@@ -263,15 +302,17 @@ translator = Translator(
     output_text_processor=output_text_processor,
 )
 
-
+# Convertir ID de token en texto
 
 Translator.tokens_to_text = tokens_to_text
 
 example_output_tokens = tf.random.uniform(
-    shape=[5, 2], minval=0, dtype=tf.int64,
-    maxval=output_text_processor.vocabulary_size())
+    shape=[5, 2],
+    minval=0,
+    dtype=tf.int64,
+    maxval=output_text_processor.vocabulary_size(),
+)
 translator.tokens_to_text(example_output_tokens).numpy()
-
 
 
 Translator.sample = sample
@@ -281,63 +322,62 @@ example_output_tokens = translator.sample(example_logits, temperature=1.0)
 example_output_tokens
 
 
-
 Translator.translate = translate_unrolled
 
-input_text = tf.constant([
-    'hace mucho frio aqui.', # "It's really cold here."
-    'Esta es mi vida.', # "This is my life.""
-])
+input_text = tf.constant(
+    [
+        "hace mucho frio aqui.",  # "It's really cold here."
+        "Esta es mi vida.",  # "This is my life.""
+    ]
+)
 
-result = translator.translate(
-    input_text = input_text)
+result = translator.translate(input_text=input_text)
 
-print(result['text'][0].numpy().decode())
-print(result['text'][1].numpy().decode())
+print(result["text"][0].numpy().decode())
+print(result["text"][1].numpy().decode())
 print()
+
 
 @tf.function(input_signature=[tf.TensorSpec(dtype=tf.string, shape=[None])])
 def tf_translate(self, input_text):
-  return self.translate(input_text)
+    return self.translate(input_text)
+
 
 Translator.tf_translate = tf_translate
 
-result = translator.tf_translate(
-    input_text = input_text)
+result = translator.tf_translate(input_text=input_text)
 
-result = translator.tf_translate(
-    input_text = input_text)
+result = translator.tf_translate(input_text=input_text)
 
-print(result['text'][0].numpy().decode())
-print(result['text'][1].numpy().decode())
+print(result["text"][0].numpy().decode())
+print(result["text"][1].numpy().decode())
 print()
 
 Translator.translate = translate_symbolic
 
-result = translator.translate(
-    input_text = input_text)
+result = translator.translate(input_text=input_text)
 
-print(result['text'][0].numpy().decode())
-print(result['text'][1].numpy().decode())
+print(result["text"][0].numpy().decode())
+print(result["text"][1].numpy().decode())
 print()
+
 
 @tf.function(input_signature=[tf.TensorSpec(dtype=tf.string, shape=[None])])
 def tf_translate(self, input_text):
-  return self.translate(input_text)
+    return self.translate(input_text)
+
 
 Translator.tf_translate = tf_translate
 
-result = translator.tf_translate(
-    input_text = input_text)
+result = translator.tf_translate(input_text=input_text)
 
-result = translator.tf_translate(
-    input_text = input_text)
+result = translator.tf_translate(input_text=input_text)
 
-print(result['text'][0].numpy().decode())
-print(result['text'][1].numpy().decode())
+print(result["text"][0].numpy().decode())
+print(result["text"][1].numpy().decode())
 print()
 
-a = result['attention'][0]
+a = result["attention"][0]
 
 print(np.sum(a, axis=-1))
 
@@ -345,73 +385,78 @@ _ = plt.bar(range(len(a[0, :])), a[0, :])
 
 plt.imshow(np.array(a), vmin=0.0)
 
-i=0
-plot_attention(result['attention'][i], input_text[i], result['text'][i])
+i = 0
+plot_attention(result["attention"][i], input_text[i], result["text"][i])
 
-three_input_text = tf.constant([
-    # This is my life.
-    'Esta es mi vida.',
-    # Are they still home?
-    '¿Todavía están en casa?',
-    # Try to find out.'
-    'Tratar de descubrir.',
-])
-
-result = translator.tf_translate(three_input_text)
-
-for tr in result['text']:
-  print(tr.numpy().decode())
-
-print()
-
-three_input_text = tf.constant([
-    # This is my life.
-    'Esta es mi vida.',
-    # Are they still home?
-    '¿Todavía están en casa?',
-    # Try to find out.'
-    'Tratar de descubrir.',
-])
+three_input_text = tf.constant(
+    [
+        # This is my life.
+        "Esta es mi vida.",
+        # Are they still home?
+        "¿Todavía están en casa?",
+        # Try to find out.'
+        "Tratar de descubrir.",
+    ]
+)
 
 result = translator.tf_translate(three_input_text)
 
-for tr in result['text']:
-  print(tr.numpy().decode())
+for tr in result["text"]:
+    print(tr.numpy().decode())
 
 print()
 
-result['text']
+three_input_text = tf.constant(
+    [
+        # This is my life.
+        "Esta es mi vida.",
+        # Are they still home?
+        "¿Todavía están en casa?",
+        # Try to find out.'
+        "Tratar de descubrir.",
+    ]
+)
+
+result = translator.tf_translate(three_input_text)
+
+for tr in result["text"]:
+    print(tr.numpy().decode())
+
+print()
+
+result["text"]
 
 i = 0
-plot_attention(result['attention'][i], three_input_text[i], result['text'][i])
+plot_attention(result["attention"][i], three_input_text[i], result["text"][i])
 
 i = 1
-plot_attention(result['attention'][i], three_input_text[i], result['text'][i])
+plot_attention(result["attention"][i], three_input_text[i], result["text"][i])
 
 i = 2
-plot_attention(result['attention'][i], three_input_text[i], result['text'][i])
+plot_attention(result["attention"][i], three_input_text[i], result["text"][i])
 
 long_input_text = tf.constant([inp[-1]])
 
 import textwrap
-print('Expected output:\n', '\n'.join(textwrap.wrap(targ[-1])))
+
+print("Expected output:\n", "\n".join(textwrap.wrap(targ[-1])))
 
 result = translator.tf_translate(long_input_text)
 
 i = 0
-plot_attention(result['attention'][i], long_input_text[i], result['text'][i])
-_ = plt.suptitle('This never works')
+plot_attention(result["attention"][i], long_input_text[i], result["text"][i])
+_ = plt.suptitle("This never works")
 
-tf.saved_model.save(translator, 'translator',
-                    signatures={'serving_default': translator.tf_translate})
+tf.saved_model.save(
+    translator, "translator", signatures={"serving_default": translator.tf_translate}
+)
 
-reloaded = tf.saved_model.load('translator')
+reloaded = tf.saved_model.load("translator")
 result = reloaded.tf_translate(three_input_text)
 
 result = reloaded.tf_translate(three_input_text)
 
-for tr in result['text']:
-  print(tr.numpy().decode())
+for tr in result["text"]:
+    print(tr.numpy().decode())
 
 print()
-

@@ -1,4 +1,5 @@
 import tensorflow as tf
+from ShapeCheckerMod import ShapeChecker
 
 
 class BahdanauAttention(tf.keras.layers.Layer):
