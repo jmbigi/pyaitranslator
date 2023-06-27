@@ -772,10 +772,11 @@ vocab_size = 1.0 * target_text_processor.vocabulary_size()
 
 model.evaluate(val_ds, steps=20, return_dict=True)
 
+epochs = 10 # 100
 history = model.fit(
     train_ds.repeat(),
-    epochs=100,
-    steps_per_epoch = 100,
+    epochs=epochs,
+    steps_per_epoch = epochs,
     validation_data=val_ds,
     validation_steps = 20,
     callbacks=[
