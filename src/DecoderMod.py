@@ -49,6 +49,7 @@ class DecoderOutput(typing.NamedTuple):
     attention_weights: Any
 
 
+@Decoder.add_method
 def call(self, inputs: DecoderInput, state=None) -> Tuple[DecoderOutput, tf.Tensor]:
     shape_checker = ShapeChecker()
     shape_checker(inputs.new_tokens, ("batch", "t"))
@@ -89,3 +90,39 @@ def call(self, inputs: DecoderInput, state=None) -> Tuple[DecoderOutput, tf.Tens
     shape_checker(logits, ("batch", "t", "output_vocab_size"))
 
     return DecoderOutput(logits, attention_weights), state
+
+
+@Decoder.add_method
+def get_initial_state(self, context):
+    batch_size = tf.shape(context)[0]
+    start_tokens = tf.fill([batch_size, 1], self.start_token)
+    done = tf.zeros([batch_size, 1], dtype=tf.bool)
+    embedded = self.embedding(start_tokens)
+    return start_tokens, done, self.rnn.get_initial_state(embedded)[0]
+
+
+@Decoder.add_method
+def tokens_to_text(self, tokens):
+    words = self.id_to_word(tokens)
+    result = tf.strings.reduce_join(words, axis=-1, separator=" ")
+    result = tf.strings.regex_replace(result, "^ *\[START\] *", "")
+    result = tf.strings.regex_replace(result, " *\[END\] *$", "")
+    return result
+
+
+@Decoder.add_method
+def get_next_token(self, context, next_token, done, state, temperature=0.0):
+    logits, state = self(context, next_token, state=state, return_state=True)
+
+    if temperature == 0.0:
+        next_token = tf.argmax(logits, axis=-1)
+    else:
+        logits = logits[:, -1, :] / temperature
+        next_token = tf.random.categorical(logits, num_samples=1)
+
+    # If a sequence produces an `end_token`, set it `done`
+    done = done | (next_token == self.end_token)
+    # Once a sequence is done it only produces 0-padding.
+    next_token = tf.where(done, tf.constant(0, dtype=tf.int64), next_token)
+
+    return next_token, done, state
