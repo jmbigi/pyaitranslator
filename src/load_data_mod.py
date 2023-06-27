@@ -1,5 +1,6 @@
 import tensorflow as tf
 import tensorflow_text as tf_text
+import numpy as np
 
 
 def load_data(path):
@@ -8,14 +9,14 @@ def load_data(path):
     lines = text.splitlines()
     pairs = [line.split("\t") for line in lines]
 
-    inp = [inp for targ, inp in pairs]
-    targ = [targ for targ, inp in pairs]
+    context = np.array([context for target, context in pairs])
+    target = np.array([target for target, context in pairs])
 
-    return targ, inp
+    return target, context
 
 
 def tf_lower_and_split_punct(text):
-    # Split accecented characters.
+    # Split accented characters.
     text = tf_text.normalize_utf8(text, "NFKD")
     text = tf.strings.lower(text)
     # Keep space, a to z, and select punctuation.
@@ -27,3 +28,11 @@ def tf_lower_and_split_punct(text):
 
     text = tf.strings.join(["[START]", text, "[END]"], separator=" ")
     return text
+
+def process_text(context, target):
+  global context_text_processor, target_text_processor
+  context = context_text_processor(context).to_tensor()
+  target = target_text_processor(target)
+  targ_in = target[:,:-1].to_tensor()
+  targ_out = target[:,1:].to_tensor()
+  return (context, targ_in), targ_out

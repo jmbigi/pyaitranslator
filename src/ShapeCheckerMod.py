@@ -1,6 +1,8 @@
 import tensorflow as tf
+import einops
 
 
+# @title
 class ShapeChecker:
     def __init__(self):
         # Keep a cache of every axis-name seen
@@ -10,25 +12,10 @@ class ShapeChecker:
         if not tf.executing_eagerly():
             return
 
-        if isinstance(names, str):
-            names = (names,)
+        parsed = einops.parse_shape(tensor, names)
 
-        shape = tf.shape(tensor)
-        rank = tf.rank(tensor)
-
-        if rank != len(names):
-            raise ValueError(
-                f"Rank mismatch:\n"
-                f"    found {rank}: {shape.numpy()}\n"
-                f"    expected {len(names)}: {names}\n"
-            )
-
-        for i, name in enumerate(names):
-            if isinstance(name, int):
-                old_dim = name
-            else:
-                old_dim = self.shapes.get(name, None)
-            new_dim = shape[i]
+        for name, new_dim in parsed.items():
+            old_dim = self.shapes.get(name, None)
 
             if broadcast and new_dim == 1:
                 continue

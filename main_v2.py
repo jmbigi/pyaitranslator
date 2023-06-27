@@ -3,12 +3,13 @@ import sys
 sys.path.insert(0, "./src")
 
 import numpy as np
+import einops
 import tensorflow as tf
 import tensorflow_text as tf_text
 import matplotlib.pyplot as plt
 import pathlib
 import textwrap
-from src.load_data_mod import load_data, tf_lower_and_split_punct
+from src.load_data_mod import load_data, tf_lower_and_split_punct, process_text
 from src.EncoderMod import Encoder
 from src.BahdanauAttentionMod import BahdanauAttention
 from src.DecoderMod import Decoder, DecoderInput, call
@@ -31,7 +32,6 @@ from src.TranslatorMod import (
 )
 from src.plot_attention_mod import plot_attention
 
-
 use_builtins = True
 
 print("*** Descarga y prepara el conjunto de datos")
@@ -45,23 +45,33 @@ path_to_zip = tf.keras.utils.get_file(
 
 path_to_file = pathlib.Path(path_to_zip).parent / "spa-eng/spa.txt"
 
-targ, inp = load_data(path_to_file)
-print(inp[-1])
+target_raw, context_raw = load_data(path_to_file)
+print(context_raw[-1])
 
-print(targ[-1])
+print(target_raw[-1])
 
 print("*** Crea un conjunto de datos tf.data")
 
-BUFFER_SIZE = len(inp)
+BUFFER_SIZE = len(context_raw)
 BATCH_SIZE = 64
 
-dataset = tf.data.Dataset.from_tensor_slices((inp, targ)).shuffle(BUFFER_SIZE)
-dataset = dataset.batch(BATCH_SIZE)
+is_train = np.random.uniform(size=(len(target_raw),)) < 0.8
 
-for example_input_batch, example_target_batch in dataset.take(1):
-    print(example_input_batch[:5])
+train_raw = (
+    tf.data.Dataset.from_tensor_slices((context_raw[is_train], target_raw[is_train]))
+    .shuffle(BUFFER_SIZE)
+    .batch(BATCH_SIZE)
+)
+val_raw = (
+    tf.data.Dataset.from_tensor_slices((context_raw[~is_train], target_raw[~is_train]))
+    .shuffle(BUFFER_SIZE)
+    .batch(BATCH_SIZE)
+)
+
+for example_context_strings, example_target_strings in train_raw.take(1):
+    print(example_context_strings[:5])
     print()
-    print(example_target_batch[:5])
+    print(example_target_strings[:5])
     break
 
 print("*** Preprocesamiento de texto")
@@ -76,36 +86,49 @@ print(tf_lower_and_split_punct(example_text).numpy().decode())
 
 max_vocab_size = 5000
 
-input_text_processor = tf.keras.layers.TextVectorization(
-    standardize=tf_lower_and_split_punct, max_tokens=max_vocab_size
+context_text_processor = tf.keras.layers.TextVectorization(
+    standardize=tf_lower_and_split_punct, max_tokens=max_vocab_size, ragged=True
 )
 
-input_text_processor.adapt(inp)
+context_text_processor.adapt(train_raw.map(lambda context, target: context))
 
 # Here are the first 10 words from the vocabulary:
-input_text_processor.get_vocabulary()[:10]
+context_text_processor.get_vocabulary()[:10]
 
-output_text_processor = tf.keras.layers.TextVectorization(
-    standardize=tf_lower_and_split_punct, max_tokens=max_vocab_size
+target_text_processor = tf.keras.layers.TextVectorization(
+    standardize=tf_lower_and_split_punct, max_tokens=max_vocab_size, ragged=True
 )
 
-output_text_processor.adapt(targ)
-output_text_processor.get_vocabulary()[:10]
+target_text_processor.adapt(train_raw.map(lambda context, target: target))
+target_text_processor.get_vocabulary()[:10]
 
-example_tokens = input_text_processor(example_input_batch)
-example_tokens[:3, :10]
+example_tokens = context_text_processor(example_context_strings)
+example_tokens[:3, :]
 
-input_vocab = np.array(input_text_processor.get_vocabulary())
-tokens = input_vocab[example_tokens[0].numpy()]
+context_vocab = np.array(context_text_processor.get_vocabulary())
+tokens = context_vocab[example_tokens[0].numpy()]
 " ".join(tokens)
 
 plt.subplot(1, 2, 1)
-plt.pcolormesh(example_tokens)
+plt.pcolormesh(example_tokens.to_tensor())
 plt.title("Token IDs")
 
 plt.subplot(1, 2, 2)
-plt.pcolormesh(example_tokens != 0)
+plt.pcolormesh(example_tokens.to_tensor() != 0)
 plt.title("Mask")
+
+
+### Process the dataset
+
+train_ds = train_raw.map(process_text, tf.data.AUTOTUNE)
+val_ds = val_raw.map(process_text, tf.data.AUTOTUNE)
+
+for (ex_context_tok, ex_tar_in), ex_tar_out in train_ds.take(1):
+    print(ex_context_tok[0, :10].numpy())
+    print()
+    print(ex_tar_in[0, :10].numpy())
+    print(ex_tar_out[0, :10].numpy())
+
 
 print("*** El modelo de codificador / decodificador")
 
