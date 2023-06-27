@@ -2,33 +2,39 @@ import numpy as np
 import tensorflow as tf
 from DecoderMod import DecoderInput
 from ShapeCheckerMod import ShapeChecker
+from EncoderMod import Encoder
+from DecoderMod import Decoder
 
+class Translator(tf.keras.Model):
+  @classmethod
+  def add_method(cls, fun):
+    setattr(cls, fun.__name__, fun)
+    return fun
 
-class Translator(tf.Module):
-    def __init__(self, encoder, decoder, input_text_processor, output_text_processor):
-        self.encoder = encoder
-        self.decoder = decoder
-        self.input_text_processor = input_text_processor
-        self.output_text_processor = output_text_processor
+  def __init__(self, units,
+               context_text_processor,
+               target_text_processor):
+    super().__init__()
+    # Build the encoder and decoder
+    encoder = Encoder(context_text_processor, units)
+    decoder = Decoder(target_text_processor, units)
 
-        self.output_token_string_from_index = tf.keras.layers.StringLookup(
-            vocabulary=output_text_processor.get_vocabulary(),
-            mask_token="",
-            invert=True,
-        )
+    self.encoder = encoder
+    self.decoder = decoder
 
-        # The output should never generate padding, unknown, or start.
-        index_from_string = tf.keras.layers.StringLookup(
-            vocabulary=output_text_processor.get_vocabulary(), mask_token=""
-        )
-        token_mask_ids = index_from_string(["", "[UNK]", "[START]"]).numpy()
+  def call(self, inputs):
+    context, x = inputs
+    context = self.encoder(context)
+    logits = self.decoder(context, x)
 
-        token_mask = np.zeros([index_from_string.vocabulary_size()], dtype=np.bool)
-        token_mask[np.array(token_mask_ids)] = True
-        self.token_mask = token_mask
+    #TODO(b/250038731): remove this
+    try:
+      # Delete the keras mask, so keras doesn't scale the loss+accuracy. 
+      del logits._keras_mask
+    except AttributeError:
+      pass
 
-        self.start_token = index_from_string(tf.constant("[START]"))
-        self.end_token = index_from_string(tf.constant("[END]"))
+    return logits
 
 
 def tokens_to_text(self, result_tokens):
@@ -195,3 +201,37 @@ def translate_symbolic(
 @tf.function(input_signature=[tf.TensorSpec(dtype=tf.string, shape=[None])])
 def tf_translate(self, input_text):
     return self.translate(input_text)
+
+#@title
+@Translator.add_method
+def translate(self,
+              texts, *,
+              max_length=50,
+              temperature=0.0):
+  # Process the input texts
+  context = self.encoder.convert_input(texts)
+  batch_size = tf.shape(texts)[0]
+
+  # Setup the loop inputs
+  tokens = []
+  attention_weights = []
+  next_token, done, state = self.decoder.get_initial_state(context)
+
+  for _ in range(max_length):
+    # Generate the next token
+    next_token, done, state = self.decoder.get_next_token(
+        context, next_token, done,  state, temperature)
+        
+    # Collect the generated tokens
+    tokens.append(next_token)
+    attention_weights.append(self.decoder.last_attention_weights)
+    
+    if tf.executing_eagerly() and tf.reduce_all(done):
+      break
+
+  # Stack the lists of tokens and attention weights.
+  tokens = tf.concat(tokens, axis=-1)   # t*[(batch 1)] -> (batch, t)
+  self.last_attention_weights = tf.concat(attention_weights, axis=1)  # t*[(batch 1 s)] -> (batch, t s)
+
+  result = self.decoder.tokens_to_text(tokens)
+  return result

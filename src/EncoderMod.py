@@ -3,37 +3,47 @@ from ShapeCheckerMod import ShapeChecker
 
 
 class Encoder(tf.keras.layers.Layer):
-    def __init__(self, input_vocab_size, embedding_dim, enc_units):
+    def __init__(self, text_processor, units):
         super(Encoder, self).__init__()
-        self.enc_units = enc_units
-        self.input_vocab_size = input_vocab_size
+        self.text_processor = text_processor
+        self.vocab_size = text_processor.vocabulary_size()
+        self.units = units
 
         # The embedding layer converts tokens to vectors
-        self.embedding = tf.keras.layers.Embedding(self.input_vocab_size, embedding_dim)
-
-        # The GRU RNN layer processes those vectors sequentially.
-        self.gru = tf.keras.layers.GRU(
-            self.enc_units,
-            # Return the sequence and state
-            return_sequences=True,
-            return_state=True,
-            recurrent_initializer="glorot_uniform",
+        self.embedding = tf.keras.layers.Embedding(
+            self.vocab_size, units, mask_zero=True
         )
 
-    def call(self, tokens, state=None):
+        # The RNN layer processes those vectors sequentially.
+        self.rnn = tf.keras.layers.Bidirectional(
+            merge_mode="sum",
+            layer=tf.keras.layers.GRU(
+                units,
+                # Return the sequence and state
+                return_sequences=True,
+                recurrent_initializer="glorot_uniform",
+            ),
+        )
+
+    def call(self, x):
         shape_checker = ShapeChecker()
-        shape_checker(tokens, ("batch", "s"))
+        shape_checker(x, "batch s")
 
-        # 2. The embedding layer looks up the embedding for each token.
-        vectors = self.embedding(tokens)
-        shape_checker(vectors, ("batch", "s", "embed_dim"))
+        # 2. The embedding layer looks up the embedding vector for each token.
+        x = self.embedding(x)
+        shape_checker(x, "batch s units")
 
-        # 3. The GRU processes the embedding sequence.
-        #    output shape: (batch, s, enc_units)
-        #    state shape: (batch, enc_units)
-        output, state = self.gru(vectors, initial_state=state)
-        shape_checker(output, ("batch", "s", "enc_units"))
-        shape_checker(state, ("batch", "enc_units"))
+        # 3. The GRU processes the sequence of embeddings.
+        x = self.rnn(x)
+        shape_checker(x, "batch s units")
 
-        # 4. Returns the new sequence and its state.
-        return output, state
+        # 4. Returns the new sequence of embeddings.
+        return x
+
+    def convert_input(self, texts):
+        texts = tf.convert_to_tensor(texts)
+        if len(texts.shape) == 0:
+            texts = tf.convert_to_tensor(texts)[tf.newaxis]
+        context = self.text_processor(texts).to_tensor()
+        context = self(context)
+        return context

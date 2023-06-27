@@ -3,93 +3,82 @@ from typing import Any, Tuple
 import typing
 from BahdanauAttentionMod import BahdanauAttention
 from ShapeCheckerMod import ShapeChecker
+from CrossAttentionMod import CrossAttention
 
 
 class Decoder(tf.keras.layers.Layer):
-    def __init__(self, output_vocab_size, embedding_dim, dec_units):
-        super(Decoder, self).__init__()
-        self.dec_units = dec_units
-        self.output_vocab_size = output_vocab_size
-        self.embedding_dim = embedding_dim
+    @classmethod
+    def add_method(cls, fun):
+        setattr(cls, fun.__name__, fun)
+        return fun
 
-        # For Step 1. The embedding layer convets token IDs to vectors
+    def __init__(self, text_processor, units):
+        super(Decoder, self).__init__()
+        self.text_processor = text_processor
+        self.vocab_size = text_processor.vocabulary_size()
+        self.word_to_id = tf.keras.layers.StringLookup(
+            vocabulary=text_processor.get_vocabulary(), mask_token="", oov_token="[UNK]"
+        )
+        self.id_to_word = tf.keras.layers.StringLookup(
+            vocabulary=text_processor.get_vocabulary(),
+            mask_token="",
+            oov_token="[UNK]",
+            invert=True,
+        )
+        self.start_token = self.word_to_id("[START]")
+        self.end_token = self.word_to_id("[END]")
+
+        self.units = units
+
+        # 1. The embedding layer converts token IDs to vectors
         self.embedding = tf.keras.layers.Embedding(
-            self.output_vocab_size, embedding_dim
+            self.vocab_size, units, mask_zero=True
         )
 
-        # For Step 2. The RNN keeps track of what's been generated so far.
-        self.gru = tf.keras.layers.GRU(
-            self.dec_units,
+        # 2. The RNN keeps track of what's been generated so far.
+        self.rnn = tf.keras.layers.GRU(
+            units,
             return_sequences=True,
             return_state=True,
             recurrent_initializer="glorot_uniform",
         )
 
-        # For step 3. The RNN output will be the query for the attention layer.
-        self.attention = BahdanauAttention(self.dec_units)
+        # 3. The RNN output will be the query for the attention layer.
+        self.attention = CrossAttention(units)
 
-        # For step 4. Eqn. (3): converting `ct` to `at`
-        self.Wc = tf.keras.layers.Dense(
-            dec_units, activation=tf.math.tanh, use_bias=False
-        )
-
-        # For step 5. This fully connected layer produces the logits for each
+        # 4. This fully connected layer produces the logits for each
         # output token.
-        self.fc = tf.keras.layers.Dense(self.output_vocab_size)
-
-
-class DecoderInput(typing.NamedTuple):
-    new_tokens: Any
-    enc_output: Any
-    mask: Any
-
-
-class DecoderOutput(typing.NamedTuple):
-    logits: Any
-    attention_weights: Any
+        self.output_layer = tf.keras.layers.Dense(self.vocab_size)
 
 
 @Decoder.add_method
-def call(self, inputs: DecoderInput, state=None) -> Tuple[DecoderOutput, tf.Tensor]:
+def call(self, context, x, state=None, return_state=False):
     shape_checker = ShapeChecker()
-    shape_checker(inputs.new_tokens, ("batch", "t"))
-    shape_checker(inputs.enc_output, ("batch", "s", "enc_units"))
-    shape_checker(inputs.mask, ("batch", "s"))
+    shape_checker(x, "batch t")
+    shape_checker(context, "batch s units")
 
-    if state is not None:
-        shape_checker(state, ("batch", "dec_units"))
+    # 1. Lookup the embeddings
+    x = self.embedding(x)
+    shape_checker(x, "batch t units")
 
-    # Step 1. Lookup the embeddings
-    vectors = self.embedding(inputs.new_tokens)
-    shape_checker(vectors, ("batch", "t", "embedding_dim"))
+    # 2. Process the target sequence.
+    x, state = self.rnn(x, initial_state=state)
+    shape_checker(x, "batch t units")
 
-    # Step 2. Process one step with the RNN
-    rnn_output, state = self.gru(vectors, initial_state=state)
+    # 3. Use the RNN output as the query for the attention over the context.
+    x = self.attention(x, context)
+    self.last_attention_weights = self.attention.last_attention_weights
+    shape_checker(x, "batch t units")
+    shape_checker(self.last_attention_weights, "batch t s")
 
-    shape_checker(rnn_output, ("batch", "t", "dec_units"))
-    shape_checker(state, ("batch", "dec_units"))
+    # Step 4. Generate logit predictions for the next token.
+    logits = self.output_layer(x)
+    shape_checker(logits, "batch t target_vocab_size")
 
-    # Step 3. Use the RNN output as the query for the attention over the
-    # encoder output.
-    context_vector, attention_weights = self.attention(
-        query=rnn_output, value=inputs.enc_output, mask=inputs.mask
-    )
-    shape_checker(context_vector, ("batch", "t", "dec_units"))
-    shape_checker(attention_weights, ("batch", "t", "s"))
-
-    # Step 4. Eqn. (3): Join the context_vector and rnn_output
-    #     [ct; ht] shape: (batch t, value_units + query_units)
-    context_and_rnn_output = tf.concat([context_vector, rnn_output], axis=-1)
-
-    # Step 4. Eqn. (3): `at = tanh(Wc@[ct; ht])`
-    attention_vector = self.Wc(context_and_rnn_output)
-    shape_checker(attention_vector, ("batch", "t", "dec_units"))
-
-    # Step 5. Generate logit predictions:
-    logits = self.fc(attention_vector)
-    shape_checker(logits, ("batch", "t", "output_vocab_size"))
-
-    return DecoderOutput(logits, attention_weights), state
+    if return_state:
+        return logits, state
+    else:
+        return logits
 
 
 @Decoder.add_method

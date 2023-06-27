@@ -20,7 +20,7 @@ from src.TrainTranslatorMod import (
     _tf_train_step,
     _train_step,
 )
-from src.MakeLossMod import MaskedLoss
+from src.MakeLossMod import MaskedLoss, masked_acc, masked_loss
 from src.BatchLogsMod import BatchLogs
 from src.TranslatorMod import (
     Translator,
@@ -31,6 +31,7 @@ from src.TranslatorMod import (
     tf_translate,
 )
 from src.plot_attention_mod import plot_attention
+from src.CrossAttentionMod import CrossAttention
 
 use_builtins = True
 
@@ -132,82 +133,125 @@ for (ex_context_tok, ex_tar_in), ex_tar_out in train_ds.take(1):
 
 print("*** El modelo de codificador / decodificador")
 
-embedding_dim = 256
-units = 1024
+# embedding_dim = 256
+# units = 1024
+UNITS = 256
 
 print("*** El codificador")
 
-# Convert the input text to tokens.
-example_tokens = input_text_processor(example_input_batch)
-
 # Encode the input sequence.
-encoder = Encoder(input_text_processor.vocabulary_size(), embedding_dim, units)
-example_enc_output, example_enc_state = encoder(example_tokens)
+encoder = Encoder(context_text_processor, UNITS)
+ex_context = encoder(ex_context_tok)
 
-print(f"Input batch, shape (batch): {example_input_batch.shape}")
-print(f"Input batch tokens, shape (batch, s): {example_tokens.shape}")
-print(f"Encoder output, shape (batch, s, units): {example_enc_output.shape}")
-print(f"Encoder state, shape (batch, units): {example_enc_state.shape}")
+print(f"Context tokens, shape (batch, s): {ex_context_tok.shape}")
+print(f"Encoder output, shape (batch, s, units): {ex_context.shape}")
 
 # Prueba la capa de atencion
 print("*** La cabeza de atención")
 
-attention_layer = BahdanauAttention(units)
-
-(example_tokens != 0).shape
-
-# Later, the decoder will generate this attention query
-example_attention_query = tf.random.normal(shape=[len(example_tokens), 2, 10])
+attention_layer = CrossAttention(UNITS)
 
 # Attend to the encoded tokens
-context_vector, attention_weights = attention_layer(
-    query=example_attention_query, value=example_enc_output, mask=(example_tokens != 0)
+embed = tf.keras.layers.Embedding(
+    target_text_processor.vocabulary_size(), output_dim=UNITS, mask_zero=True
+)
+ex_tar_embed = embed(ex_tar_in)
+
+result = attention_layer(ex_tar_embed, ex_context)
+
+print(f"Context sequence, shape (batch, s, units): {ex_context.shape}")
+print(f"Target sequence, shape (batch, t, units): {ex_tar_embed.shape}")
+print(f"Attention result, shape (batch, t, units): {result.shape}")
+print(
+    f"Attention weights, shape (batch, t, s):    {attention_layer.last_attention_weights.shape}"
 )
 
-print(
-    f"Attention result shape: (batch_size, query_seq_length, units):           {context_vector.shape}"
-)
-print(
-    f"Attention weights shape: (batch_size, query_seq_length, value_seq_length): {attention_weights.shape}"
-)
+attention_layer.last_attention_weights[0].numpy().sum(axis=-1)
+
+attention_weights = attention_layer.last_attention_weights
+mask = (ex_context_tok != 0).numpy()
 
 plt.subplot(1, 2, 1)
-plt.pcolormesh(attention_weights[:, 0, :])
+plt.pcolormesh(mask * attention_weights[:, 0, :])
 plt.title("Attention weights")
 
 plt.subplot(1, 2, 2)
-plt.pcolormesh(example_tokens != 0)
+plt.pcolormesh(mask)
 plt.title("Mask")
-
-attention_weights.shape
-
-attention_slice = attention_weights[0, 0].numpy()
-attention_slice = attention_slice[attention_slice != 0]
-
-plt.suptitle("Attention weights for one sequence")
-
-plt.figure(figsize=(12, 6))
-a1 = plt.subplot(1, 2, 1)
-plt.bar(range(len(attention_slice)), attention_slice)
-# freeze the xlim
-plt.xlim(plt.xlim())
-plt.xlabel("Attention weights")
-
-a2 = plt.subplot(1, 2, 2)
-plt.bar(range(len(attention_slice)), attention_slice)
-plt.xlabel("Attention weights, zoomed")
-
-# zoom in
-top = max(a1.get_ylim())
-zoom = 0.85 * top
-a2.set_ylim([0.90 * top, top])
-a1.plot(a1.get_xlim(), [zoom, zoom], color="k")
 
 print("*** El decodificador")
 
-Decoder.call = call
+decoder = Decoder(target_text_processor, UNITS)
 
-decoder = Decoder(output_text_processor.vocabulary_size(), embedding_dim, units)
+logits = decoder(ex_context, ex_tar_in)
+
+print(f"encoder output shape: (batch, s, units) {ex_context.shape}")
+print(f"input target tokens shape: (batch, t) {ex_tar_in.shape}")
+print(f"logits shape shape: (batch, target_vocabulary_size) {logits.shape}")
+
+# Setup the loop variables.
+next_token, done, state = decoder.get_initial_state(ex_context)
+tokens = []
+
+for n in range(10):
+    # Run one step.
+    next_token, done, state = decoder.get_next_token(
+        ex_context, next_token, done, state, temperature=1.0
+    )
+    # Add the token to the output.
+    tokens.append(next_token)
+
+# Stack all the tokens together.
+tokens = tf.concat(tokens, axis=-1)  # (batch, t)
+
+# Convert the tokens back to a a string
+result = decoder.tokens_to_text(tokens)
+result[:3].numpy()
+
+print("*** El modelo")
+
+model = Translator(UNITS, context_text_processor, target_text_processor)
+
+logits = model((ex_context_tok, ex_tar_in))
+
+print(f"Context tokens, shape: (batch, s, units) {ex_context_tok.shape}")
+print(f"Target tokens, shape: (batch, t) {ex_tar_in.shape}")
+print(f"logits, shape: (batch, t, target_vocabulary_size) {logits.shape}")
+
+model.compile(optimizer="adam", loss=masked_loss, metrics=[masked_acc, masked_loss])
+
+vocab_size = 1.0 * target_text_processor.vocabulary_size()
+
+{"expected_loss": tf.math.log(vocab_size).numpy(),
+ "expected_acc": 1/vocab_size}
+
+model.evaluate(val_ds, steps=20, return_dict=True)
+
+history = model.fit(
+    train_ds.repeat(), 
+    epochs=100,
+    steps_per_epoch = 100,
+    validation_data=val_ds,
+    validation_steps = 20,
+    callbacks=[
+        tf.keras.callbacks.EarlyStopping(patience=3)])
+
+plt.plot(history.history['loss'], label='loss')
+plt.plot(history.history['val_loss'], label='val_loss')
+plt.ylim([0, max(plt.ylim())])
+plt.xlabel('Epoch #')
+plt.ylabel('CE/token')
+plt.legend()
+
+plt.plot(history.history['masked_acc'], label='accuracy')
+plt.plot(history.history['val_masked_acc'], label='val_accuracy')
+plt.ylim([0, max(plt.ylim())])
+plt.xlabel('Epoch #')
+plt.ylabel('CE/token')
+plt.legend()
+
+result = model.translate(['¿Todavía está en casa?']) # Are you still home
+result[0].numpy().decode()
 
 # Convert the target sequence, and collect the "[START]" tokens
 example_output_tokens = output_text_processor(example_target_batch)
@@ -313,6 +357,8 @@ plt.xlabel("Batch #")
 plt.ylabel("CE/token")
 
 print("*** Traducir")
+
+
 
 translator = Translator(
     encoder=train_translator.encoder,
